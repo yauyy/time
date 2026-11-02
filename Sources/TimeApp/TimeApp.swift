@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.target = self
             button.action = #selector(togglePopover)
             button.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+            // Dates and time zones are available in the panel, without a hover overlay.
+            button.toolTip = nil
             button.setAccessibilityIdentifier("time.menuBarClock")
         }
         popover.behavior = .transient
@@ -89,8 +91,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.title = displayTitle
             lastTitle = displayTitle
         }
-        button.toolTip = "Time · \(ClockCity.resolve(preferences.primaryTimeZoneID).name)\n" +
-            ClockFormatter.date(at: date, in: ClockCity.resolve(preferences.primaryTimeZoneID).timeZone, includeYear: true)
         button.setAccessibilityLabel("\(ClockCity.resolve(preferences.primaryTimeZoneID).name)时间 \(title)")
     }
 
