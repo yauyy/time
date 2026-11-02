@@ -170,4 +170,11 @@ public enum ClockFormatter {
     public static func hideSeparators(at date: Date, preferences: ClockPreferences) -> Bool {
         preferences.blinkSeparators && Int(floor(date.timeIntervalSince1970)) % 2 != 0
     }
+
+    public static func menuBarDisplayTitle(for title: String, at date: Date, preferences: ClockPreferences) -> String {
+        // A punctuation space matches the colon's advance in the system clock
+        // font. Both blink phases remain ordinary, natively styled button text.
+        hideSeparators(at: date, preferences: preferences)
+            ? title.replacingOccurrences(of: ":", with: "\u{2008}") : title
+    }
 }

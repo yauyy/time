@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 @testable import TimeCore
 
@@ -265,5 +266,32 @@ final class ClockModelsTests: XCTestCase {
 
     func testCitySearchReturnsNoResultsWhenNothingMatches() {
         XCTAssertTrue(ClockCity.search("this city does not exist").isEmpty)
+    }
+
+    @MainActor
+    func testNativeBlinkingPreservesSystemFontWidth() throws {
+        let date = try instant("2026-11-01T20:05:06Z")
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        var preferences = ClockPreferences()
+        preferences.blinkSeparators = true
+        for detailed in [false, true] {
+            preferences.showDate = detailed
+            preferences.showWeekday = detailed
+            preferences.showSeconds = detailed
+            preferences.use24Hour = !detailed
+            preferences.showAMPM = detailed
+            let title = ClockFormatter.menuBarTitle(at: date, preferences: preferences)
+            let visible = ClockFormatter.menuBarDisplayTitle(for: title, at: date, preferences: preferences)
+            let hidden = ClockFormatter.menuBarDisplayTitle(for: title, at: date.addingTimeInterval(1), preferences: preferences)
+            XCTAssertEqual(visible, title)
+            XCTAssertFalse(hidden.contains(":"))
+            XCTAssertEqual(hidden.replacingOccurrences(of: "\u{2008}", with: ":"), title)
+            XCTAssertEqual((visible as NSString).size(withAttributes: [.font: font]).width,
+                           (hidden as NSString).size(withAttributes: [.font: font]).width,
+                           accuracy: 0.001, "Blinking must not move the menu-bar item")
+        }
+        preferences.blinkSeparators = false
+        let title = ClockFormatter.menuBarTitle(at: date, preferences: preferences)
+        XCTAssertEqual(ClockFormatter.menuBarDisplayTitle(for: title, at: date.addingTimeInterval(1), preferences: preferences), title)
     }
 }

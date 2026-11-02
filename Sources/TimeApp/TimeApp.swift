@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let store = ClockStore()
     private var subscriptions = Set<AnyCancellable>()
-    private var lastTitle: NSAttributedString?
+    private var lastTitle: String?
     private var previousApplication: NSRunningApplication?
     private var presentationGeneration = 0
 
@@ -83,19 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func updateTitle(date: Date, preferences: ClockPreferences) {
         guard let button = statusItem?.button else { return }
         let title = ClockFormatter.menuBarTitle(at: date, preferences: preferences)
-        let attributed = NSMutableAttributedString(string: title, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular),
-            .foregroundColor: NSColor.labelColor
-        ])
-        if ClockFormatter.hideSeparators(at: date, preferences: preferences) {
-            // Transparent separators keep their width, so the menu bar never jumps.
-            for (index, codeUnit) in title.utf16.enumerated() where codeUnit == 58 {
-                attributed.addAttribute(.foregroundColor, value: NSColor.clear, range: NSRange(location: index, length: 1))
-            }
-        }
-        if lastTitle?.isEqual(to: attributed) != true {
-            button.attributedTitle = attributed
-            lastTitle = attributed
+        let displayTitle = ClockFormatter.menuBarDisplayTitle(for: title, at: date, preferences: preferences)
+        if lastTitle != displayTitle {
+            // AppKit owns the text appearance for every display and blink phase.
+            button.title = displayTitle
+            lastTitle = displayTitle
         }
         button.toolTip = "Time · \(ClockCity.resolve(preferences.primaryTimeZoneID).name)\n" +
             ClockFormatter.date(at: date, in: ClockCity.resolve(preferences.primaryTimeZoneID).timeZone, includeYear: true)
