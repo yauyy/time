@@ -1,0 +1,161 @@
+name: Test, build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '已存在的版本标签，例如 v1.0.3；留空只测试构建'
+        required: false
+        type: string
+      publish:
+        description: '为上述已有标签创建 GitHub Release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: time-${{ github.workflow }}-${{ github.event_name }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Official labels: macos-15 is Apple Silicon; macos-15-intel is Intel.
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test
+        run: swift test
+
+  build:
+    name: Build universal app
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 25
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check version and exact tag commit
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
+          COMMIT=$(git rev-parse HEAD)
+          TAG=''
+          PUBLISH=false
+          if [[ "$EVENT_NAME" == push && "$EVENT_REF" == refs/tags/v* ]]; then
+            TAG=${EVENT_REF#refs/tags/}
+            PUBLISH=true
+          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            TAG=$REQUESTED_TAG
+            if [[ -z "$TAG" && "$EVENT_REF" == refs/tags/v* ]]; then TAG=${EVENT_REF#refs/tags/}; fi
+            if [[ "$REQUESTED_PUBLISH" == true ]]; then PUBLISH=true; fi
+          fi
+          if [[ "$PUBLISH" == true && -z "$TAG" ]]; then
+            printf '%s\n' '发布必须指定已存在的 release_tag。' >&2
+            exit 1
+          fi
+          if [[ -n "$TAG" ]]; then
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [[ "$TAG" == "v$VERSION" ]]
+            TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+            [[ "$TAG_COMMIT" == "$COMMIT" ]]
+          fi
+          printf 'version=%s\ntag=%s\ncommit=%s\npublish=%s\n' \
+            "$VERSION" "$TAG" "$COMMIT" "$PUBLISH" >> "$GITHUB_OUTPUT"
+      - name: Build universal
+        run: ./scripts/build.sh --universal
+      - name: Package verified app without rebuilding
+        run: ./scripts/package-release.sh --skip-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Time-macOS-universal
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            dist/Time-macOS-universal.zip
+            dist/Time-macOS-universal.dmg
+            dist/SHA256SUMS.txt
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: Time-macOS-universal
+          path: release-assets
+      - name: Verify tag and assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_TAG" == "v$RELEASE_VERSION" ]]
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_COMMIT" ]]
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$RELEASE_COMMIT" ]]
+          (
+            cd release-assets
+            sha256sum -c SHA256SUMS.txt
+          )
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          适用于 macOS 13 及以上版本，Universal 应用同时兼容 Apple Silicon 和 Intel Mac。
+
+          下载 DMG 后打开，将 Time.app 拖入 Applications；也可以下载 ZIP 后将解压的应用移入“应用程序”。安装与格式设置见仓库 README。
+
+          本版本使用 ad hoc 签名，尚未使用 Developer ID 签名或通过 Apple 公证。首次打开时 macOS 可能显示安全提示，具体处理见安装说明。
+
+          SHA256SUMS.txt 提供 ZIP 和 DMG 的 SHA-256 校验值。
+          EOF
+          gh release create "$RELEASE_TAG" --verify-tag --target "$RELEASE_COMMIT" \
+            --title "Time $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" \
+            release-assets/Time-macOS-universal.zip \
+            release-assets/Time-macOS-universal.dmg \
+            release-assets/SHA256SUMS.txt
